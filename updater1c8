@@ -1,0 +1,295 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+
+	_ "database/sql"
+	"os/exec"
+	"regexp"
+	"strings"
+	"time"
+
+	_ "github.com/cheggaaa/pb/v3"
+	_ "github.com/deniswernert/go-fstab"
+	"github.com/dustin/go-humanize"
+	_ "github.com/dustin/go-humanize"
+	"github.com/minio/minio/pkg/disk"
+	_ "github.com/minio/minio/pkg/disk"
+	_ "golang.org/x/sys/windows"
+	"golang.org/x/text/encoding/charmap"
+
+	_ "github.com/jackc/pgx"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
+)
+
+type Service struct {
+	Name  string `json:"Имя_службы"`
+	Stade string `json:"Состояние"`
+}
+
+type Cluster struct {
+	Cluster  string   `json:"cluster"`
+	Name     string   `json:"name"`
+	Port     string   `json:"port"`
+	Infobase Infobase `json:"infobase"`
+}
+
+type Infobase struct {
+	Infobase string `json:"infobase"`
+	Name     string `json:"name"`
+}
+
+type ConfigSave struct {
+	Partno int `db:"partno"`
+}
+
+type DataBase struct {
+	login    string
+	password string
+	name     string
+}
+
+type PlatformAuth struct {
+	login    string
+	password string
+	dbname   string
+}
+type DiskStatus struct {
+	All  uint64 `json:"all"`
+	Used uint64 `json:"used"`
+	Free uint64 `json:"free"`
+}
+
+//func testp() {
+//println("Это тестовое окно нужно для того, чтобы посмотреть, не зависает ли исполняемый файл")
+//count := 100
+//bar := pb.StartNew(count)
+//for i := 0; i < count; i++ {
+//	bar.Increment()
+//	time.Sleep(time.Millisecond)
+//}
+//bar.Finish()
+//}
+func cmdExec(name string, args ...string) (out []byte) {
+	in, err := exec.Command(name, args...).Output()
+	if err != nil {
+		log.Println(err)
+	}
+
+	d := charmap.CodePage866.NewDecoder()
+	out, err = d.Bytes(in)
+	if err != nil {
+		log.Println(err)
+	}
+	return out
+}
+
+func checkService() {
+	log.Println("Проверка службы RAS/RAC")
+	out := cmdExec("sc", "query", "1CEnterpriseRemoteServer")
+	var srv Service
+	if err := json.Unmarshal([]byte(parseOut(out)), &srv); err != nil {
+		log.Println(err)
+	}
+	log.Println("Статус службы RAS: ", srv.Stade)
+}
+
+func fillCluster(clst *Cluster) {
+	out := cmdExec("C:\\Program Files (x86)\\1cv8\\8.3.16.1063\\bin\\rac.exe", "cluster", "list")
+	log.Println("Выполняем сценрарий FillCluster")
+	if err := json.Unmarshal([]byte(parseOut(out)), &clst); err != nil {
+		log.Println(err)
+	}
+	out = cmdExec("C:\\Program Files (x86)\\1cv8\\8.3.16.1063\\bin\\rac.exe", "infobase", "summary", "list", "--cluster="+clst.Cluster)
+
+	if err := json.Unmarshal([]byte(parseOut(out)), &clst.Infobase); err != nil {
+		log.Println(err)
+	}
+}
+
+func parseOut(out []byte) string {
+	log.Println("Парсинг")
+	pattern := regexp.MustCompile(`(?m)(?P<key>.*):(?P<value>.*)$`)
+
+	var resultJSON string
+
+	template := "$key:$value\n"
+	var result []byte
+
+	for _, submatches := range pattern.FindAllSubmatchIndex(out, -1) {
+		result = pattern.ExpandString(result, template, string(out), submatches)
+		a := string(out[submatches[2]:submatches[3]])
+		b := string(out[submatches[4]:submatches[5]])
+
+		b = strings.ReplaceAll(b, "\"", "")
+		c, d := strings.Fields(a), strings.Fields(b)
+
+		r := fmt.Sprintf("\"%s\" : \"%s\", ", c, d)
+		r = strings.ReplaceAll(r, "[", "")
+		r = strings.ReplaceAll(r, "]", "")
+		resultJSON += r
+	}
+	resultJSON = "{" + resultJSON + "}"
+	resultJSON = strings.ReplaceAll(resultJSON, ", }", "}")
+
+	return resultJSON
+}
+
+func checkInPQ(ShopString string) (startUpdate bool) {
+	log.Println("Выполняем сценарий CheckInPQ")
+	db, err := sqlx.Connect("postgres", ShopString)
+	if err != nil {
+		log.Fatalln("checkInPQ: ", err)
+	}
+
+	var cnfsv []ConfigSave
+	err = db.Select(&cnfsv, "SELECT partno FROM ConfigSave")
+	if err != nil {
+		log.Println(err)
+	}
+
+	if cnfsv != nil {
+		log.Println("Обновление")
+		return true
+	} else {
+		return false
+	}
+}
+
+func dealwithErr(err error) {
+	if err != nil {
+		fmt.Println(err)
+		//os.Exit(-1)
+	}
+}
+
+const (
+	B  = 1
+	KB = 1024 * B
+	MB = 1024 * KB
+	GB = 1024 * MB
+)
+
+func DiskUsage(path string) error {
+	log.Println("Выполняем сценарий проверки места на дисках")
+	di, err := disk.GetInfo(path)
+	percentage := (float64(di.Total-di.Free) / float64(di.Total)) * 100
+	log.Println("%s of %s disk space used (%0.2f%%)\n",
+		humanize.Bytes(di.Total-di.Free),
+		humanize.Bytes(di.Total),
+		percentage)
+	log.Println("Выполняется резервное копирование (10-15 минут)")
+	return err
+
+}
+
+var name = flag.Bool("name", false, "Выгружать DT или нет")
+var noDumpDB bool
+
+func init() {
+	flag.BoolVar(&noDumpDB, "nodt", true, "Указать если обновить без сохранения DT")
+}
+
+const (
+	host     = "localhost"
+	port     = 5432
+	user     = "postgres"
+	password = "postgres"
+	dbname   = "shop"
+)
+
+func main() {
+	f, err := os.OpenFile("logfile.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 7)
+	if err != nil {
+		log.Fatalf("Ошибка доступа к log файлу: %v", err)
+	}
+	defer f.Close()
+
+	log.SetOutput(f)
+
+	_, exists := os.LookupEnv("PGLOCALEDIR")
+	if exists {
+		os.Unsetenv("PGLOCALEDIR")
+	}
+
+	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		log.Println(err)
+	}
+
+	log.Println("Запуск основной программы")
+	defer log.Println("Завершение основной программы")
+
+	checkService()
+
+	var clst Cluster
+	fillCluster(&clst)
+
+	plauth := PlatformAuth{login: "admin", password: "Go1Bycah", dbname: "localhost\\" + clst.Infobase.Name}
+
+	ShopString := fmt.Sprintf("host=%s port=%d user=%s "+"password=%s dbname=%s sslmode=disable", host, port, user, password, dbname)
+	log.Println("Connected to Postgres DB")
+	if err != nil {
+		log.Println("Нет подключения к базе")
+	}
+	for !checkInPQ(ShopString) {
+		log.Panicln("Обновление не найдено")
+		time.Sleep(time.Minute * 1)
+	}
+
+	log.Println("Блокировка регламентных заданий - on")
+	cmdExec("C:\\Program Files (x86)\\1cv8\\8.3.16.1063\\bin\\rac.exe", "infobase", "update", "--cluster="+clst.Cluster, "--infobase="+clst.Infobase.Infobase, "--infobase-user="+plauth.login, "--infobase-pwd="+plauth.password, "--scheduled-jobs-deny=on")
+	time.Sleep(time.Second * 3)
+
+	log.Println("Завершаем рабочие процессы 1с8")
+	cmdExec("taskkill", "/IM", "1cv8c.exe", "/F")
+	time.Sleep(time.Second * 1)
+
+	log.Println("Убиваем процессы 1с8 до конца")
+	cmdExec("taskkill", "/IM", "1cv8.exe", "/F")
+	time.Sleep(time.Second * 1)
+
+	log.Println("Остановка службы Агента сервера")
+	cmdExec("net", "stop", "1C:Enterprise 8.3 Server Agent")
+	time.Sleep(time.Second * 5)
+
+	log.Println("Запуск службы Агента сервера")
+	cmdExec("net", "start", "1C:Enterprise 8.3 Server Agent")
+	time.Sleep(time.Second * 5)
+
+	flag.Parse()
+	if noDumpDB == true {
+		log.Println("Не выгружать DT", noDumpDB)
+	} else {
+		log.Println("Выгружать DT ", noDumpDB)
+		log.Println("Резервное копирование: ", dir)
+		//хз, возможно потом уберем
+		currentTime := time.Now()
+		dir += "\\1c8" + currentTime.Format("-2006-01-02-15-04-05") + ".dt"
+		DiskUsage(dir[0:2])
+		cmdExec("C:\\Program Files (x86)\\1cv8\\8.3.16.1063\\bin\\1cv8.exe", "DESIGNER", "/S", plauth.dbname, "/N", plauth.login, "/P", plauth.password, "/DumpIB", dir)
+		time.Sleep(time.Second * 1)
+
+	}
+
+	log.Println("Обновление")
+	log.Println(plauth.dbname)
+
+	cmdExec("C:\\Program Files (x86)\\1cv8\\8.3.16.1063\\bin\\1cv8.exe", "DESIGNER", "/S", plauth.dbname, "/N", plauth.login, "/P", plauth.password, "/UpdateDBCfg")
+	time.Sleep(time.Second * 1)
+
+	log.Println("Блокировка регламентных заданий - off")
+	cmdExec("C:\\Program Files (x86)\\1cv8\\8.3.16.1063\\bin\\rac.exe", "infobase", "update", "--cluster="+clst.Cluster, "--infobase="+clst.Infobase.Infobase, "--infobase-user="+plauth.login, "--infobase-pwd="+plauth.password, "--scheduled-jobs-deny=off")
+
+	if !checkInPQ(ShopString) {
+		log.Println("Обновление завершено!!")
+	} else {
+		log.Println("Обновление не выполнено")
+	}
+}
