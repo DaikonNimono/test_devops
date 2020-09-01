@@ -30,6 +30,11 @@ pipeline {
             }
     }  
 
+    stage('Отключение конфигурации от хранилища') {
+            steps {
+                bat "runner unbindrepo --db-user=$ADMIN1C_USER --ibconnection /Slocalhost\\${JOB_NAME}"
+            }
+        }
     stage('Сборка') {
             steps {
                 bat "runner init-dev --db-user=$ADMIN1C_USER --ibconnection /Slocalhost\\${JOB_NAME} --src=.\\src\\cf"
