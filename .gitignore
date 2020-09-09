@@ -5,3 +5,9 @@ ConfigDumpInfo.xml
 check.bat
 .scannerwork
 allureRun.cmd
+allure-report/
+VaRunner.cmd
+build/
+env.json
+sonar-project.properties
+tools/
