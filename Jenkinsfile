@@ -6,6 +6,7 @@ pipeline {
     environment {
         SONAR_ID     = credentials('sonar-login')
         ADMIN1C_USER = credentials('ADMIN1C_USER')
+        SONAR_HOST = credentials('SONAR_HOST')
         PATH = "C:\\WINDOWS;C:\\WINDOWS\\SYSTEM32;C:\\Program Files\\AdoptOpenJDK\\jdk-11.0.8.10-hotspot\\bin;C:\\Program Files\\AdoptOpenJDK\\jdk-8.0.265.01-hotspot;C:\\opt\\OneScript\\bin;E:\\sonar-scanner\\bin;C:\\Program Files\\Git\\bin;"
     }
 
