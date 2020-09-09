@@ -43,7 +43,8 @@ pipeline {
 
     stage("Sonar") {
             steps {
-                bat "sonar-scanner -D sonar.login=$SONAR_ID -D sonar.projectVersion=1.0.${BUILD_ID}"
+                bat "sonar-scanner -D sonar.login=$SONAR_ID -D sonar.projectVersion=1.0.${BUILD_ID} -D sonar.host.url=${SONAR_HOST} -D sonar.projectKey=${JOB_NAME} -D sonar.projectName=${JOB_NAME} -D sonar.sources=./src -D sonar.sourceEncoding=UTF-8 -D sonar.inclusions=src/**/*.bsl -D sonar.exclusions=**/\u0440\u0435\u0433\u043b\u0430\u043c\u0435\u043d\u0442\u0438\u0440*/**/*.*
+"
             }
         }
         
